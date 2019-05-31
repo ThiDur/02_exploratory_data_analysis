@@ -1,0 +1,221 @@
+---
+title: "Data exploration"
+author: "TD"
+output: pdf_document
+---
+
+# Executive summary
+In this report the data of the twitter, blogs and news documents are explored. The total amount of data was seen to be large so sub-sampling is necessary. Three n-grams seems to be the largest number of usefull ngrams
+
+# Setting upt the environment and loading data
+The environment is setup by loading the stringr, dplyr, tm, stringi and RWeka libraries.
+```{r setup script, warning=FALSE}
+library(stringr)
+library(dplyr)
+library(tm)
+library(stringi)
+library(RWeka)
+rm(list=ls())
+```
+
+Next data is loaded from the files
+```{r load data, warning=FALSE}
+print(getwd())
+# TWITTER
+con <- file("Data/en_US.twitter.txt", "r")
+twitter <- readLines(con, skipNul = TRUE)
+close(con)
+
+# BLOGS
+con <- file("Data/en_US.blogs.txt", "r")
+blogs <- readLines(con, skipNul = TRUE)
+close(con)
+
+# NEWS
+con <- file("Data/en_US.news.txt", "r")
+news <- readLines(con, skipNul = TRUE)
+close(con)
+```
+# Initial exploration
+A first exploration shows that the twitter file contains over 2.3 million tweets, the blog almost 0.9 million blogs and the news file only 77 news articles. On the other hand the twitter file is also far shorter per item To make ngrams it seems better to use more of the news and blog files than the twitter file.
+```{r initial exploration}
+# Count lines per file
+print(paste('The twitter file contains ', length(twitter), ' lines'))
+print(paste('The news file contains ', length(news), ' lines'))
+print(paste('The blogs file contains ', length(blogs), ' lines'))
+
+# Count words per file
+print(paste(
+    'The twitter file contains ', sum(stri_count_words(twitter)), ' words',
+    ' with an average of ', mean(stri_count_words(twitter)), ' per tweet'
+    ))
+print(paste(
+    'The news file contains ', sum(stri_count_words(news)), ' words',
+    ' with an average of ', mean(stri_count_words(news)), ' per article'
+    ))
+print(paste(
+    'The blog file contains ', sum(stri_count_words(blogs)), ' words',
+    ' with an average of ', mean(stri_count_words(blogs)), ' per blog'
+    ))
+```
+A corpus is made by combining samples of equal numbers of items
+```{r building test corpus}
+set.seed(42)
+data_sample <- c(sample(twitter, 1000),
+                 sample(blogs, 1000),
+                 sample(news, 1000))
+rm(twitter, blogs, news)
+```
+
+And a vcorpus is made
+```{r building corpus}
+corpus <- VCorpus(VectorSource(data_sample))
+```
+
+In cleaning it is found that there are file names that can be removed, twitter handles and hashtags. Next non-regular characters are removed, non-letters, everything is put to lower, numbers are removed, whitespace stripped, stopwords are removed, etc.
+```{r building cleaning logics}
+replace_string <- function(x, pattern) gsub(pattern, " ", x)
+replace_regex <- function(x, pattern) str_replace_all(x, pattern, " ")
+delete_regex <- function(x, pattern) str_replace_all(x, pattern, "")
+replace_contraction_error <- function(doc) {
+    doc <- gsub("nâ???Tt", "n't", doc)
+    doc <- gsub("â???Tll", "'ll", doc)
+    doc <- gsub("â???Tre", "'re", doc)
+    doc <- gsub("â???Tve", "'ve", doc)
+    doc <- gsub("â???Tm", "'m", doc)
+    doc <- gsub("itâ???Ts", "it's", doc) # a special case of 's
+    return(doc)
+}
+
+
+clean_string <- function(x){
+    x <- tolower(x)
+    x <- replace_contraction_error(x)
+    x <- removeWords(x, stopwords("en"))
+    x <- replace_string(x, "(f|ht)tp(s?)://(.*)[.][a-z]+")  # remove files
+    x <- replace_string(x, "@[^\\s]+")  # remove twitter handles
+    x <- replace_regex(x, "#[\\w|\\d]*")  # remove hashtags
+    x <- delete_regex(x, "[^\\w|\\s]*")  # remove everything but letters and whitespace
+    x <- replace_regex(x, "[^ -~]")  # remove none utf-8 characters
+    x <- removeNumbers(x)
+    x <- stripWhitespace(x)
+    x <- delete_regex(x, "^\\s*")  # remove leading whitespaces
+    x <- delete_regex(x, "\\s*$")  # remove trailing witespaces
+    x
+}
+```
+
+The cleaning function is used to clean the corpus
+```{r clean corpus}
+clean_corpus <- tm_map(corpus, clean_string)
+clean_corpus <- tm_map(clean_corpus, PlainTextDocument)
+# rm(corpus)
+```
+
+It can be seen that there are unigrams (words) that have up to 299 different occurences (remember, after removing stopwords). 'said' and 'will' are the one with the most occurences.
+```{r explore unigrams, fig.height=3, fig.width=6}
+unigram_tokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 1, max = 1))
+
+dtm_unigram <- DocumentTermMatrix(clean_corpus, control = list(tokenize = unigram_tokenizer))
+n_docs <- nDocs(dtm_unigram)
+dtm_unigram <- removeSparseTerms(dtm_unigram, (n_docs - 1.1) / n_docs)
+
+tbl_dtm_unigram <- as_tibble(as.matrix(dtm_unigram))
+tbl_frequencies <- summarise_all(tbl_dtm_unigram, funs(sum))
+unigram_frequencies <- unlist(tbl_frequencies)
+
+rm(dtm_unigram)
+rm(tbl_dtm_unigram)
+rm(tbl_frequencies)
+
+hist(
+    unigram_frequencies, breaks = 30,
+    xlab='Number of word occurances',
+    ylab='Number of words with given frequency of occurance',
+    main='Histogram of unigram (word) occurance'
+)
+hist(
+    unigram_frequencies[which(unigram_frequencies > 100)],
+    xlab='Number of word occurances',
+    ylab='Number of words with given frequency of occurance',
+    main='Histogram of unigrams (words)  with more than 100 occurences'
+)
+
+print('the unigrams with more than 200 occurences are:')
+print(unigram_frequencies[which(unigram_frequencies > 200)])
+```
+Most bigrams have viewer than 3 occurances (we left the 1 occurence out). There are 5 occurences of bi-grams with more than 15 occurences. All seems logical like 'new york' and 'right now'.
+```{r explore bigrams, fig.height=3, fig.width=6}
+
+bigram_tokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 2, max = 2))
+dtm_bigram <- DocumentTermMatrix(clean_corpus, control = list(tokenize = bigram_tokenizer))
+n_docs = nDocs(dtm_bigram)
+dtm_bigram <- removeSparseTerms(dtm_bigram, (n_docs - 1.1) / n_docs)
+
+tbl_dtm_bigram <- as_tibble(as.matrix(dtm_bigram))
+tbl_frequencies <- summarise_all(tbl_dtm_bigram, funs(sum))
+bigram_frequencies <- unlist(tbl_frequencies)
+
+rm(dtm_bigram)
+rm(tbl_dtm_bigram)
+rm(tbl_frequencies)
+
+hist(
+    bigram_frequencies, breaks = 30,
+    xlab='#bigram occurances',
+    ylab='#bigrams with given occurance',
+    main='Histogram of bigram occurance'
+)
+hist(
+    bigram_frequencies[which(bigram_frequencies > 5)],
+    xlab='#bigram occurances',
+    ylab='#bigrams with given occurance',
+    main='Histogram of bigrams with more than 5 occurences'
+)
+print('the bigrams with more than 15 occurences are:')
+print(bigram_frequencies[which(bigram_frequencies > 15)])
+```
+There are even 80 trigrams that occure twice and 6 that occure even more often.
+```{r explore trigrams, fig.height=3, fig.width=6}
+
+trigram_tokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 3, max = 3))
+dtm_trigram <- DocumentTermMatrix(clean_corpus, control = list(tokenize = trigram_tokenizer))
+
+n_docs = nDocs(dtm_trigram)
+dtm_trigram <- removeSparseTerms(dtm_trigram, (n_docs - 1.1) / n_docs)
+
+tbl_dtm_trigram <- as_tibble(as.matrix(dtm_trigram))
+tbl_frequencies <- summarise_all(tbl_dtm_trigram, funs(sum))
+trigram_frequencies <- unlist(tbl_frequencies)
+
+hist(
+    trigram_frequencies,
+    xlab='#trigram occurances',
+    ylab='#trigrams with given occurance',
+    main='Histogram of trigram occurance'
+)
+
+hist(
+    trigram_frequencies[which(trigram_frequencies > 2)],
+    xlab='#trigram occurances',
+    ylab='#trigrams with given occurance',
+    main='Histogram of trigrams with more than 2 occurences'
+)
+print('the trigrams with more than 2 occurences are:')
+print(trigram_frequencies[which(trigram_frequencies > 2)])
+```
+In this dataset there are only 2 quadgram with more than 2 occurances, both seem to be the Amazon company name. Quadgrams therefore seem to be too much.
+```{r explore quadgrams, fig.height=3, fig.width=6}
+
+quadgram_tokenizer <- function(x) NGramTokenizer(x, Weka_control(min = 4, max = 4))
+dtm_quadgram <- DocumentTermMatrix(clean_corpus, control = list(tokenize = quadgram_tokenizer))
+n_docs = nDocs(dtm_quadgram)
+dtm_quadgram <- removeSparseTerms(dtm_quadgram, (n_docs - 1.1) / n_docs)
+
+tbl_dtm_quadgram <- as_tibble(as.matrix(dtm_quadgram))
+tbl_frequencies <- summarise_all(tbl_dtm_quadgram, funs(sum))
+quadgram_frequencies <- unlist(tbl_frequencies)
+
+print(paste('The number of quadgrams with more than 2 occurance is', length(quadgram_frequencies[which(quadgram_frequencies > 2)])))
+quadgram_frequencies[which(quadgram_frequencies > 2)]
+```
